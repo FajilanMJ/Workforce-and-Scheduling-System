@@ -129,6 +129,10 @@ declare(strict_types=1);
                 </button>
 
                 <div class="topbar-account-menu" id="adminTopbarAccountMenu" aria-label="Administrator account options">
+                    <a href="<?= e($baseUrl) ?>/admin/settings.php" class="<?= $page === 'settings' ? 'active' : '' ?>">
+                        <span class="account-menu-icon">&#9881;</span>
+                        <span>Settings</span>
+                    </a>
                     <a href="<?= e($baseUrl) ?>/logout.php" class="logout-link">
                         <span class="account-menu-icon">&#8618;</span>
                         <span>Log Out</span>

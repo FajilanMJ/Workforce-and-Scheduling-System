@@ -1,7 +1,31 @@
 <?php
 declare(strict_types=1);
 
-// Load the authentication controller and process the logout request.
+$bootstrapFiles = [
+    __DIR__ . '/config/config.php',
+    __DIR__ . '/config/database.php',
+    __DIR__ . '/includes/session.php',
+    __DIR__ . '/includes/functions.php',
+    __DIR__ . '/includes/helpers.php',
+    __DIR__ . '/includes/auth.php',
+    __DIR__ . '/includes/init.php',
+    __DIR__ . '/includes/bootstrap.php',
+];
+
+foreach ($bootstrapFiles as $bootstrapFile) {
+    if (is_file($bootstrapFile)) {
+        require_once $bootstrapFile;
+    }
+}
+
 require_once __DIR__ . '/controllers/AuthController.php';
 
-handle_logout_request($conn, '/Scheduling_System');
+if ((!isset($conn) || !($conn instanceof mysqli)) && function_exists('get_db_connection')) {
+    $conn = get_db_connection();
+}
+
+$resolvedBaseUrl = isset($baseUrl) && is_string($baseUrl)
+    ? $baseUrl
+    : (defined('BASE_URL') ? (string) BASE_URL : '/Scheduling_System');
+
+handle_logout_page($conn ?? null, $resolvedBaseUrl);

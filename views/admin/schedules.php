@@ -6,7 +6,7 @@ require __DIR__ . '/../layouts/admin_header.php';
 <!-- Warm Sage & Cream Summary Strip -->
 <section class="schedule-summary-strip">
     <div class="warm-summary-tile">
-        <div class="warm-summary-label">Shifts in View</div>
+        <div class="warm-summary-label">Total Shifts</div>
         <div class="warm-summary-number"><?= (int) $summary['total'] ?></div>
     </div>
 
@@ -26,25 +26,35 @@ require __DIR__ . '/../layouts/admin_header.php';
     </div>
 </section>
 
-<!-- Main Schedules Card -->
+<!-- Main Compact Schedules Card -->
 <section class="content-card">
     <div class="card-heading">
         <div>
-            <h2>Shift Roster &amp; Task Assignments</h2>
-            <div class="small muted">Manage employee shift assignments and daily tasks</div>
+            <h2>Staff Shift Schedules</h2>
+            <div class="small muted">Compact employee schedule ranges &amp; quick shift takeover</div>
         </div>
 
-        <button
-            type="button"
-            class="btn btn-green btn-sm"
-            data-bs-toggle="modal"
-            data-bs-target="#assignScheduleModal"
-        >
-            + Assign Shift
-        </button>
+        <div class="d-flex gap-2">
+            <button
+                type="button"
+                class="btn btn-outline-green btn-sm"
+                data-bs-toggle="modal"
+                data-bs-target="#takeoverRangeModal"
+            >
+                &#8644; Shift Takeover
+            </button>
+            <button
+                type="button"
+                class="btn btn-green btn-sm"
+                data-bs-toggle="modal"
+                data-bs-target="#assignScheduleModal"
+            >
+                + Assign Shift
+            </button>
+        </div>
     </div>
 
-    <!-- Instant Filter Bar (Employee, Category, and Keyword) -->
+    <!-- Instant Filter Bar -->
     <form method="get" action="<?= e($baseUrl) ?>/admin/schedules.php" class="schedule-filter-panel auto-filter-form">
         <div class="schedule-filter-row">
             <div class="schedule-filter-field">
@@ -96,75 +106,77 @@ require __DIR__ . '/../layouts/admin_header.php';
             <table class="table align-middle">
                 <thead>
                     <tr>
-                        <th>Date</th>
                         <th>Staff Member</th>
+                        <th>Shift Date Range</th>
                         <th>Shift Hours</th>
-                        <th>Role &amp; Task Assignment</th>
+                        <th>Role &amp; Task</th>
                         <th>Status</th>
                         <th class="text-end">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <?php foreach ($schedules as $sched): ?>
+                    <?php foreach ($schedules as $row): ?>
                         <?php
-                        $schedId = (int) $sched['id'];
-                        $schedDate = (string) $sched['schedule_date'];
-                        $isToday = $schedDate === $today;
-                        $isOnLeave = !empty($sched['is_on_leave']);
-                        $rawStatus = (string) ($sched['status'] ?? 'scheduled');
+                        $staffId = (int) $row['staff_id'];
+                        $startDate = (string) $row['start_date'];
+                        $endDate = (string) $row['end_date'];
+                        $shiftCount = (int) $row['shift_count'];
+                        $includesToday = ($today >= $startDate && $today <= $endDate);
+                        $latest = $row['latest_shift'];
 
-                        if ($rawStatus === 'cancelled') {
-                            $pillClass = 'cancelled';
-                            $pillLabel = 'Cancelled';
-                        } elseif ($isOnLeave) {
+                        $dateRangeText = ($startDate === $endDate)
+                            ? date('M j, Y', strtotime($startDate))
+                            : date('M j, Y', strtotime($startDate)) . ' – ' . date('M j, Y', strtotime($endDate));
+
+                        if (!empty($row['has_leave'])) {
                             $pillClass = 'leave';
                             $pillLabel = 'On Leave';
-                        } elseif ($rawStatus === 'completed' || !empty($sched['check_out_time'])) {
+                        } elseif ($row['active_count'] > 0) {
+                            $pillClass = 'scheduled';
+                            $pillLabel = $row['active_count'] . ' Scheduled';
+                        } elseif ($row['completed_count'] > 0) {
                             $pillClass = 'completed';
                             $pillLabel = 'Completed';
-                        } elseif (!empty($sched['check_in_time'])) {
-                            $pillClass = 'scheduled';
-                            $pillLabel = ($sched['attendance_status'] ?? '') === 'late' ? 'Checked In (Late)' : 'Checked In';
                         } else {
-                            $pillClass = 'scheduled';
-                            $pillLabel = 'Scheduled';
+                            $pillClass = 'cancelled';
+                            $pillLabel = 'Cancelled';
                         }
                         ?>
                         <tr>
                             <td>
-                                <div class="shift-date-box <?= $isToday ? 'today-box' : '' ?>">
-                                    <span class="shift-date-main"><?= e(date('M j, Y', strtotime($schedDate))) ?></span>
-                                    <span class="shift-date-sub"><?= $isToday ? 'Today' : e(date('l', strtotime($schedDate))) ?></span>
-                                </div>
-                            </td>
-
-                            <td>
-                                <strong><?= e((string) $sched['staff_name']) ?></strong>
+                                <strong><?= e((string) $row['staff_name']) ?></strong>
                                 <div class="small muted mt-1">
-                                    <?= e((string) $sched['employee_id']) ?>
-                                    <?php if (!empty($sched['staff_position'])): ?>
-                                        &middot; <?= e((string) $sched['staff_position']) ?>
+                                    <?= e((string) $row['employee_id']) ?>
+                                    <?php if (!empty($row['staff_position'])): ?>
+                                        &middot; <?= e((string) $row['staff_position']) ?>
                                     <?php endif; ?>
                                 </div>
                             </td>
 
                             <td>
+                                <div class="shift-date-box <?= $includesToday ? 'today-box' : '' ?>">
+                                    <span class="shift-date-main"><?= e($dateRangeText) ?></span>
+                                    <span class="shift-date-sub">
+                                        <?= $shiftCount ?> <?= $shiftCount === 1 ? 'shift' : 'shifts' ?>
+                                        <?= $includesToday ? ' &bull; Active Today' : '' ?>
+                                    </span>
+                                </div>
+                            </td>
+
+                            <td>
                                 <strong>
-                                    <?= e(admin_format_time((string) $sched['start_time'])) ?>
+                                    <?= e(admin_format_time((string) $row['start_time'])) ?>
                                     &ndash;
-                                    <?= e(admin_format_time((string) $sched['end_time'])) ?>
+                                    <?= e(admin_format_time((string) $row['end_time'])) ?>
                                 </strong>
-                                <?php if (!empty($sched['work_location'])): ?>
-                                    <div class="small muted mt-1"><?= e((string) $sched['work_location']) ?></div>
+                                <?php if (!empty($row['work_location'])): ?>
+                                    <div class="small muted mt-1"><?= e((string) $row['work_location']) ?></div>
                                 <?php endif; ?>
                             </td>
 
                             <td>
-                                <span class="warm-category-tag"><?= e((string) $sched['category_name']) ?></span>
-                                <div class="mt-1"><?= e((string) $sched['task_description']) ?></div>
-                                <?php if (!empty($sched['notes'])): ?>
-                                    <div class="warm-note-tag"><?= e((string) $sched['notes']) ?></div>
-                                <?php endif; ?>
+                                <span class="warm-category-tag"><?= e((string) $row['category_name']) ?></span>
+                                <div class="mt-1"><?= e((string) $row['task_description']) ?></div>
                             </td>
 
                             <td>
@@ -172,88 +184,86 @@ require __DIR__ . '/../layouts/admin_header.php';
                             </td>
 
                             <td class="text-end">
-                                <div class="dropdown d-inline-block">
+                                <div class="d-inline-flex gap-1 align-items-center">
                                     <button
                                         type="button"
-                                        class="row-action-toggle"
-                                        data-bs-toggle="dropdown"
-                                        data-bs-popper-config='{"strategy":"fixed"}'
-                                        aria-expanded="false"
-                                        aria-label="Shift actions for <?= e((string) $sched['staff_name']) ?>"
-                                        title="Actions"
+                                        class="btn btn-outline-green btn-sm py-1 px-2"
+                                        style="font-size: 11.5px;"
+                                        data-bs-toggle="modal"
+                                        data-bs-target="#takeoverRangeModal"
+                                        onclick="
+                                            document.getElementById('takeoverFromStaff').value='<?= $staffId ?>';
+                                            document.getElementById('takeoverStartDate').value='<?= e($startDate) ?>';
+                                            document.getElementById('takeoverEndDate').value='<?= e($endDate) ?>';
+                                        "
                                     >
-                                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-                                            <circle cx="8" cy="3" r="1.4"/>
-                                            <circle cx="8" cy="8" r="1.4"/>
-                                            <circle cx="8" cy="13" r="1.4"/>
-                                        </svg>
+                                        Take Over
                                     </button>
 
-                                    <ul class="dropdown-menu dropdown-menu-end row-action-menu">
-                                        <li>
-                                            <button
-                                                type="button"
-                                                class="dropdown-item"
-                                                data-bs-toggle="modal"
-                                                data-bs-target="#editScheduleModal"
-                                                data-schedule-id="<?= $schedId ?>"
-                                                data-staff-id="<?= (int) $sched['staff_id'] ?>"
-                                                data-category-id="<?= (int) $sched['assigned_category_id'] ?>"
-                                                data-schedule-date="<?= e($schedDate) ?>"
-                                                data-start-time="<?= e(substr((string) $sched['start_time'], 0, 5)) ?>"
-                                                data-end-time="<?= e(substr((string) $sched['end_time'], 0, 5)) ?>"
-                                                data-work-location="<?= e((string) ($sched['work_location'] ?? '')) ?>"
-                                                data-task-description="<?= e((string) ($sched['task_description'] ?? '')) ?>"
-                                                data-notes="<?= e((string) ($sched['notes'] ?? '')) ?>"
-                                                data-status="<?= e($rawStatus) ?>"
-                                            >
-                                                Edit Shift
-                                            </button>
-                                        </li>
+                                    <div class="dropdown d-inline-block">
+                                        <button
+                                            type="button"
+                                            class="row-action-toggle"
+                                            data-bs-toggle="dropdown"
+                                            data-bs-popper-config='{"strategy":"fixed"}'
+                                            aria-expanded="false"
+                                            title="More actions"
+                                        >
+                                            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                                                <circle cx="8" cy="3" r="1.4"/>
+                                                <circle cx="8" cy="8" r="1.4"/>
+                                                <circle cx="8" cy="13" r="1.4"/>
+                                            </svg>
+                                        </button>
 
-                                        <li>
-                                            <?php if ($rawStatus !== 'cancelled'): ?>
-                                                <form method="post" action="<?= e($baseUrl) ?>/admin/schedules.php">
-                                                    <input type="hidden" name="csrf_token" value="<?= e($csrfToken) ?>">
-                                                    <input type="hidden" name="action" value="change_state">
-                                                    <input type="hidden" name="schedule_id" value="<?= $schedId ?>">
-                                                    <input type="hidden" name="mode" value="cancel">
-                                                    <button type="submit" class="dropdown-item action-warn">
-                                                        Cancel Shift
-                                                    </button>
-                                                </form>
-                                            <?php else: ?>
-                                                <form method="post" action="<?= e($baseUrl) ?>/admin/schedules.php">
-                                                    <input type="hidden" name="csrf_token" value="<?= e($csrfToken) ?>">
-                                                    <input type="hidden" name="action" value="change_state">
-                                                    <input type="hidden" name="schedule_id" value="<?= $schedId ?>">
-                                                    <input type="hidden" name="mode" value="restore">
-                                                    <button type="submit" class="dropdown-item">
-                                                        Restore Shift
-                                                    </button>
-                                                </form>
-                                            <?php endif; ?>
-                                        </li>
-
-                                        <?php if (empty($sched['check_in_time'])): ?>
-                                            <li><hr class="dropdown-divider"></li>
+                                        <ul class="dropdown-menu dropdown-menu-end row-action-menu">
                                             <li>
-                                                <form
-                                                    method="post"
-                                                    action="<?= e($baseUrl) ?>/admin/schedules.php"
-                                                    onsubmit="return confirm('Permanently delete this shift?');"
+                                                <button
+                                                    type="button"
+                                                    class="dropdown-item"
+                                                    data-bs-toggle="modal"
+                                                    data-bs-target="#assignScheduleModal"
+                                                    onclick="
+                                                        document.getElementById('assignStaffSelect').value='<?= $staffId ?>';
+                                                        document.getElementById('assignCategorySelect').value='<?= (int) $row['assigned_category_id'] ?>';
+                                                    "
                                                 >
-                                                    <input type="hidden" name="csrf_token" value="<?= e($csrfToken) ?>">
-                                                    <input type="hidden" name="action" value="change_state">
-                                                    <input type="hidden" name="schedule_id" value="<?= $schedId ?>">
-                                                    <input type="hidden" name="mode" value="delete">
-                                                    <button type="submit" class="dropdown-item action-danger">
-                                                        Delete Shift
-                                                    </button>
-                                                </form>
+                                                    + Add More Dates
+                                                </button>
                                             </li>
-                                        <?php endif; ?>
-                                    </ul>
+                                            <li>
+                                                <button
+                                                    type="button"
+                                                    class="dropdown-item"
+                                                    data-bs-toggle="modal"
+                                                    data-bs-target="#editScheduleModal"
+                                                    data-schedule-id="<?= (int) $latest['id'] ?>"
+                                                    data-staff-id="<?= $staffId ?>"
+                                                    data-category-id="<?= (int) $latest['assigned_category_id'] ?>"
+                                                    data-schedule-date="<?= e((string) $latest['schedule_date']) ?>"
+                                                    data-start-time="<?= e(substr((string) $latest['start_time'], 0, 5)) ?>"
+                                                    data-end-time="<?= e(substr((string) $latest['end_time'], 0, 5)) ?>"
+                                                    data-work-location="<?= e((string) ($latest['work_location'] ?? '')) ?>"
+                                                    data-task-description="<?= e((string) ($latest['task_description'] ?? '')) ?>"
+                                                    data-notes="<?= e((string) ($latest['notes'] ?? '')) ?>"
+                                                    data-status="<?= e((string) ($latest['status'] ?? 'scheduled')) ?>"
+                                                >
+                                                    Edit Latest Shift
+                                                </button>
+                                            </li>
+                                            <?php if (($latest['status'] ?? '') !== 'cancelled'): ?>
+                                                <li>
+                                                    <form method="post" action="<?= e($baseUrl) ?>/admin/schedules.php">
+                                                        <input type="hidden" name="csrf_token" value="<?= e($csrfToken) ?>">
+                                                        <input type="hidden" name="action" value="change_state">
+                                                        <input type="hidden" name="schedule_id" value="<?= (int) $latest['id'] ?>">
+                                                        <input type="hidden" name="mode" value="cancel">
+                                                        <button type="submit" class="dropdown-item action-warn">Cancel Latest Shift</button>
+                                                    </form>
+                                                </li>
+                                            <?php endif; ?>
+                                        </ul>
+                                    </div>
                                 </div>
                             </td>
                         </tr>
@@ -265,23 +275,24 @@ require __DIR__ . '/../layouts/admin_header.php';
         <?php require __DIR__ . '/../partials/pagination.php'; ?>
     <?php else: ?>
         <div class="empty-state">
-            No shifts found for the selected filter. Click <strong>+ Assign Shift</strong> to schedule staff.
+            No shifts found. Click <strong>+ Assign Shift</strong> to schedule staff.
         </div>
     <?php endif; ?>
 </section>
 
-<!-- 1. Assign Shift Modal (Single Day or Date Range) -->
-<div class="modal fade" id="assignScheduleModal" tabindex="-1" aria-labelledby="assignScheduleModalLabel" aria-hidden="true">
+<!-- 1. Streamlined Assign Shift Modal -->
+<div class="modal fade" id="assignScheduleModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
         <form method="post" action="<?= e($baseUrl) ?>/admin/schedules.php" class="modal-content">
             <div class="modal-header admin-modal-header">
-                <h5 class="modal-title" id="assignScheduleModalLabel">Assign Staff Shift</h5>
+                <h5 class="modal-title">Assign Shift Date Range</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
 
             <div class="modal-body warm-modal-body">
                 <input type="hidden" name="csrf_token" value="<?= e($csrfToken) ?>">
                 <input type="hidden" name="action" value="assign_schedule">
+                <input type="hidden" name="allow_unpermitted" value="1">
 
                 <div class="row g-2 mb-2">
                     <div class="col-sm-6">
@@ -289,13 +300,12 @@ require __DIR__ . '/../layouts/admin_header.php';
                         <select name="staff_id" id="assignStaffSelect" class="form-select form-select-sm" required>
                             <option value="">Choose employee...</option>
                             <?php foreach ($activeStaff as $member): ?>
-                                <?php $permCsv = implode(',', (array) ($member['permitted_category_ids'] ?? [])); ?>
                                 <option
                                     value="<?= (int) $member['id'] ?>"
+                                    onchange="if(this.dataset.primary){document.getElementById('assignCategorySelect').value=this.dataset.primary;}"
                                     data-primary="<?= (int) ($member['primary_category_id'] ?? 0) ?>"
-                                    data-permitted="<?= e($permCsv) ?>"
                                 >
-                                    <?= e((string) $member['full_name']) ?> (<?= e((string) $member['employee_id']) ?>)
+                                    <?= e((string) $member['full_name']) ?>
                                 </option>
                             <?php endforeach; ?>
                         </select>
@@ -306,95 +316,126 @@ require __DIR__ . '/../layouts/admin_header.php';
                         <select name="assigned_category_id" id="assignCategorySelect" class="form-select form-select-sm" required>
                             <option value="">Choose category...</option>
                             <?php foreach ($jobCategories as $cat): ?>
-                                <option value="<?= (int) $cat['id'] ?>" data-base-name="<?= e((string) $cat['category_name']) ?>">
-                                    <?= e((string) $cat['category_name']) ?>
-                                </option>
+                                <option value="<?= (int) $cat['id'] ?>"><?= e((string) $cat['category_name']) ?></option>
                             <?php endforeach; ?>
                         </select>
                     </div>
                 </div>
-                <div class="form-text small text-success mb-2" id="assignPermissionHint"></div>
 
                 <div class="row g-2 mb-2">
                     <div class="col-sm-6">
                         <label class="form-label small fw-bold mb-1">Start Date *</label>
-                        <input type="date" id="assignStartDate" name="start_date" class="form-control form-control-sm" value="<?= e($today) ?>" required>
+                        <input
+                            type="date"
+                            id="assignStartDate"
+                            name="start_date"
+                            class="form-control form-control-sm"
+                            value="<?= e($today) ?>"
+                            onchange="if(document.getElementById('assignEndDate').value < this.value){document.getElementById('assignEndDate').value = this.value;}"
+                            required
+                        >
                     </div>
                     <div class="col-sm-6">
-                        <label class="form-label small fw-bold mb-1">End Date (Same day or range) *</label>
+                        <label class="form-label small fw-bold mb-1">End Date *</label>
                         <input type="date" id="assignEndDate" name="end_date" class="form-control form-control-sm" value="<?= e($today) ?>" required>
-                    </div>
-                </div>
-
-                <!-- Weekday filter shown automatically when End Date > Start Date -->
-                <div class="mb-2" id="weekdaySelectorRow" style="display: none;">
-                    <label class="form-label small fw-bold mb-1">Days of Week in Range (leave all unchecked for every day)</label>
-                    <div class="weekday-pill-group">
-                        <?php
-                        $days = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 7 => 'Sun'];
-                        foreach ($days as $num => $label):
-                        ?>
-                            <label class="weekday-pill-option">
-                                <input type="checkbox" name="weekdays[]" value="<?= $num ?>">
-                                <span><?= $label ?></span>
-                            </label>
-                        <?php endforeach; ?>
                     </div>
                 </div>
 
                 <div class="row g-2 mb-2">
                     <div class="col-sm-4">
                         <label class="form-label small fw-bold mb-1">Start Time *</label>
-                        <input type="time" name="start_time" class="form-control form-control-sm" value="06:00" required>
+                        <input type="time" name="start_time" class="form-control form-control-sm" value="<?= e($workforceDefaults['default_shift_start'] ?? '06:00') ?>" required>
                     </div>
                     <div class="col-sm-4">
                         <label class="form-label small fw-bold mb-1">End Time *</label>
-                        <input type="time" name="end_time" class="form-control form-control-sm" value="14:00" required>
+                        <input type="time" name="end_time" class="form-control form-control-sm" value="<?= e($workforceDefaults['default_shift_end'] ?? '14:00') ?>" required>
                     </div>
                     <div class="col-sm-4">
-                        <label class="form-label small fw-bold mb-1">Work Station</label>
-                        <input type="text" name="work_location" class="form-control form-control-sm" placeholder="e.g., Main Kitchen">
+                        <label class="form-label small fw-bold mb-1">Station</label>
+                        <input type="text" name="work_location" class="form-control form-control-sm" placeholder="e.g., Kitchen">
                     </div>
                 </div>
 
-                <div class="mb-2">
+                <div>
                     <label class="form-label small fw-bold mb-1">Task Description *</label>
-                    <textarea
-                        name="task_description"
-                        class="form-control form-control-sm"
-                        rows="2"
-                        required
-                        placeholder="Describe assigned shift duties..."
-                    ></textarea>
-                </div>
-
-                <div class="mb-2">
-                    <label class="form-label small fw-bold mb-1">Notes (Optional)</label>
-                    <input type="text" name="notes" class="form-control form-control-sm" placeholder="Optional shift remarks">
-                </div>
-
-                <div class="form-check">
-                    <input class="form-check-input" type="checkbox" name="allow_unpermitted" value="1" id="allowUnpermittedCheck">
-                    <label class="form-check-label small muted" for="allowUnpermittedCheck">
-                        Allow assignment even if category is not yet in employee's Shift Roles
-                    </label>
+                    <input type="text" name="task_description" class="form-control form-control-sm" required placeholder="e.g., Morning prep & grilling">
                 </div>
             </div>
 
             <div class="modal-footer py-2">
                 <button type="button" class="btn btn-light btn-sm" data-bs-dismiss="modal">Cancel</button>
-                <button type="submit" class="btn btn-green btn-sm">Save Schedule</button>
+                <button type="submit" class="btn btn-green btn-sm">Assign Shifts</button>
             </div>
         </form>
     </div>
 </div>
 
-<!-- 2. Edit Existing Shift Modal -->
-<div class="modal fade" id="editScheduleModal" tabindex="-1" aria-labelledby="editScheduleModalLabel" aria-hidden="true">
+<!-- 2. Simplified Shift Takeover Modal -->
+<div class="modal fade" id="takeoverRangeModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
         <form method="post" action="<?= e($baseUrl) ?>/admin/schedules.php" class="modal-content">
             <div class="modal-header admin-modal-header">
-                <h5 class="modal-title" id="editScheduleModalLabel">Edit Shift Assignment</h5>
+                <h5 class="modal-title">Quick Shift Takeover</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+
+            <div class="modal-body warm-modal-body">
+                <input type="hidden" name="csrf_token" value="<?= e($csrfToken) ?>">
+                <input type="hidden" name="action" value="takeover_range">
+
+                <div class="row g-2 mb-2">
+                    <div class="col-sm-6">
+                        <label class="form-label small fw-bold mb-1">Original Staff *</label>
+                        <select name="from_staff_id" id="takeoverFromStaff" class="form-select form-select-sm" required>
+                            <option value="">Select staff...</option>
+                            <?php foreach ($staffDirectory as $member): ?>
+                                <option value="<?= (int) $member['id'] ?>"><?= e((string) $member['full_name']) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <div class="col-sm-6">
+                        <label class="form-label small fw-bold mb-1">Replacement Staff *</label>
+                        <select name="to_staff_id" class="form-select form-select-sm" required>
+                            <option value="">Select replacement...</option>
+                            <?php foreach ($activeStaff as $member): ?>
+                                <option value="<?= (int) $member['id'] ?>"><?= e((string) $member['full_name']) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="row g-2 mb-2">
+                    <div class="col-sm-6">
+                        <label class="form-label small fw-bold mb-1">From Date *</label>
+                        <input type="date" name="takeover_start_date" id="takeoverStartDate" class="form-control form-control-sm" value="<?= e($today) ?>" required>
+                    </div>
+                    <div class="col-sm-6">
+                        <label class="form-label small fw-bold mb-1">To Date *</label>
+                        <input type="date" name="takeover_end_date" id="takeoverEndDate" class="form-control form-control-sm" value="<?= e($today) ?>" required>
+                    </div>
+                </div>
+
+                <div>
+                    <label class="form-label small fw-bold mb-1">Reason (Optional)</label>
+                    <input type="text" name="takeover_reason" class="form-control form-control-sm" placeholder="e.g., Covering sick leave">
+                </div>
+            </div>
+
+            <div class="modal-footer py-2">
+                <button type="button" class="btn btn-light btn-sm" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-green btn-sm">Transfer Shifts</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- 3. Edit Single Shift Modal -->
+<div class="modal fade" id="editScheduleModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <form method="post" action="<?= e($baseUrl) ?>/admin/schedules.php" class="modal-content">
+            <div class="modal-header admin-modal-header">
+                <h5 class="modal-title">Edit Latest Shift</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
 
@@ -408,13 +449,10 @@ require __DIR__ . '/../layouts/admin_header.php';
                         <label class="form-label small fw-bold mb-1">Staff Member *</label>
                         <select name="staff_id" id="editStaffSelect" class="form-select form-select-sm" required>
                             <?php foreach ($staffDirectory as $member): ?>
-                                <option value="<?= (int) $member['id'] ?>">
-                                    <?= e((string) $member['full_name']) ?> (<?= e((string) $member['employee_id']) ?>)
-                                </option>
+                                <option value="<?= (int) $member['id'] ?>"><?= e((string) $member['full_name']) ?></option>
                             <?php endforeach; ?>
                         </select>
                     </div>
-
                     <div class="col-sm-6">
                         <label class="form-label small fw-bold mb-1">Job Category *</label>
                         <select name="assigned_category_id" id="editCategorySelect" class="form-select form-select-sm" required>
@@ -446,7 +484,7 @@ require __DIR__ . '/../layouts/admin_header.php';
                         <input type="text" id="editWorkLocation" name="work_location" class="form-control form-control-sm">
                     </div>
                     <div class="col-sm-5">
-                        <label class="form-label small fw-bold mb-1">Shift Status</label>
+                        <label class="form-label small fw-bold mb-1">Status</label>
                         <select id="editScheduleStatus" name="status" class="form-select form-select-sm">
                             <option value="scheduled">Scheduled</option>
                             <option value="completed">Completed</option>
@@ -457,7 +495,7 @@ require __DIR__ . '/../layouts/admin_header.php';
 
                 <div class="mb-2">
                     <label class="form-label small fw-bold mb-1">Task Description *</label>
-                    <textarea id="editTaskDescription" name="task_description" class="form-control form-control-sm" rows="2" required></textarea>
+                    <input type="text" id="editTaskDescription" name="task_description" class="form-control form-control-sm" required>
                 </div>
 
                 <div>

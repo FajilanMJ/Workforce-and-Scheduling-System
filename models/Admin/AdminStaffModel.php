@@ -1,7 +1,32 @@
 <?php
 declare(strict_types=1);
 
-// --- Shared Staff & Category Helpers ---
+// --- Schema Guard & Shared Helpers ---
+
+function admin_ensure_staff_schema(mysqli $conn): void
+{
+    static $checked = false;
+    if ($checked) {
+        return;
+    }
+    $checked = true;
+
+    $conn->query(
+        'CREATE TABLE IF NOT EXISTS staff_job_permissions (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            staff_id INT NOT NULL,
+            category_id INT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_staff_category (staff_id, category_id),
+            KEY idx_category_id (category_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+    );
+
+    $colRes = $conn->query("SHOW COLUMNS FROM users LIKE 'primary_category_id'");
+    if ($colRes && $colRes->num_rows === 0) {
+        $conn->query('ALTER TABLE users ADD COLUMN primary_category_id INT NULL DEFAULT NULL AFTER position');
+    }
+}
 
 if (!function_exists('admin_format_time')) {
     function admin_format_time(?string $timeValue): string
@@ -69,6 +94,8 @@ function admin_get_staff_directory(
     string $statusFilter = 'all',
     int $categoryFilter = 0
 ): array {
+    admin_ensure_staff_schema($conn);
+
     $sql = "SELECT
                 u.id,
                 u.employee_id,
@@ -214,6 +241,8 @@ function admin_get_staff_directory(
 
 function admin_create_staff_account(mysqli $conn, int $adminId, array $input, string $ipAddress): array
 {
+    admin_ensure_staff_schema($conn);
+
     $fullName = trim((string) ($input['full_name'] ?? ''));
     $email = strtolower(trim((string) ($input['email'] ?? '')));
     $position = trim((string) ($input['position'] ?? 'Staff'));
@@ -300,6 +329,8 @@ function admin_update_staff_permissions(
     array $permittedCategories,
     string $ipAddress
 ): array {
+    admin_ensure_staff_schema($conn);
+
     if ($staffId <= 0) {
         return ['ok' => false, 'message' => 'Invalid staff member selected.'];
     }

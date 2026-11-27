@@ -108,13 +108,86 @@ function admin_get_schedules_list(mysqli $conn, array $filters): array
     return $rows;
 }
 
+// --- Group Shifts Into One Compact Row Per Staff Member ---
+
+function admin_get_compact_schedules_list(mysqli $conn, array $filters): array
+{
+    $rawShifts = admin_get_schedules_list($conn, $filters);
+    $grouped = [];
+
+    foreach ($rawShifts as $shift) {
+        $staffId = (int) $shift['staff_id'];
+        $schedDate = (string) $shift['schedule_date'];
+        $status = (string) ($shift['status'] ?? 'scheduled');
+        $isOnLeave = !empty($shift['is_on_leave']);
+
+        if (!isset($grouped[$staffId])) {
+            $grouped[$staffId] = [
+                'staff_id' => $staffId,
+                'staff_name' => (string) $shift['staff_name'],
+                'employee_id' => (string) $shift['employee_id'],
+                'staff_position' => (string) ($shift['staff_position'] ?? ''),
+                'start_date' => $schedDate,
+                'end_date' => $schedDate,
+                'shift_count' => 0,
+                'start_time' => (string) $shift['start_time'],
+                'end_time' => (string) $shift['end_time'],
+                'category_name' => (string) $shift['category_name'],
+                'assigned_category_id' => (int) $shift['assigned_category_id'],
+                'task_description' => (string) $shift['task_description'],
+                'work_location' => (string) ($shift['work_location'] ?? ''),
+                'has_leave' => false,
+                'active_count' => 0,
+                'completed_count' => 0,
+                'cancelled_count' => 0,
+                'latest_shift' => $shift,
+                'shifts' => [],
+            ];
+        }
+
+        if ($schedDate < $grouped[$staffId]['start_date']) {
+            $grouped[$staffId]['start_date'] = $schedDate;
+        }
+        if ($schedDate > $grouped[$staffId]['end_date']) {
+            $grouped[$staffId]['end_date'] = $schedDate;
+            $grouped[$staffId]['latest_shift'] = $shift;
+            $grouped[$staffId]['start_time'] = (string) $shift['start_time'];
+            $grouped[$staffId]['end_time'] = (string) $shift['end_time'];
+            $grouped[$staffId]['category_name'] = (string) $shift['category_name'];
+            $grouped[$staffId]['assigned_category_id'] = (int) $shift['assigned_category_id'];
+            $grouped[$staffId]['task_description'] = (string) $shift['task_description'];
+            $grouped[$staffId]['work_location'] = (string) ($shift['work_location'] ?? '');
+        }
+
+        $grouped[$staffId]['shift_count']++;
+        $grouped[$staffId]['shifts'][] = $shift;
+
+        if ($isOnLeave) {
+            $grouped[$staffId]['has_leave'] = true;
+        }
+        if ($status === 'cancelled') {
+            $grouped[$staffId]['cancelled_count']++;
+        } elseif ($status === 'completed' || !empty($shift['check_out_time'])) {
+            $grouped[$staffId]['completed_count']++;
+        } else {
+            $grouped[$staffId]['active_count']++;
+        }
+    }
+
+    return array_values($grouped);
+}
+
 // --- Assign Single or Multi-Day Shifts ---
 
 function admin_assign_schedule_range(mysqli $conn, int $adminId, array $input, string $ipAddress): array
 {
+    if (function_exists('admin_ensure_staff_schema')) {
+        admin_ensure_staff_schema($conn);
+    }
+
     $staffId = (int) ($input['staff_id'] ?? 0);
-    $categoryId = (int) ($input['assigned_category_id'] ?? 0);
-    $startDate = trim((string) ($input['start_date'] ?? ''));
+    $categoryId = (int) ($input['assigned_category_id'] ?? $input['category_id'] ?? 0);
+    $startDate = trim((string) ($input['start_date'] ?? $input['schedule_date'] ?? ''));
     $endDate = trim((string) ($input['end_date'] ?? $startDate));
     $startTime = trim((string) ($input['start_time'] ?? ''));
     $endTime = trim((string) ($input['end_time'] ?? ''));
@@ -208,6 +281,65 @@ function admin_assign_schedule_range(mysqli $conn, int $adminId, array $input, s
     return ['ok' => true, 'message' => "Assigned {$createdCount} shift(s) successfully."];
 }
 
+// --- Simplified Range Shift Takeover ---
+
+function admin_takeover_staff_range(
+    mysqli $conn,
+    int $adminId,
+    int $fromStaffId,
+    int $toStaffId,
+    string $startDate,
+    string $endDate,
+    string $reason,
+    string $ipAddress
+): array {
+    if ($fromStaffId <= 0 || $toStaffId <= 0 || $fromStaffId === $toStaffId) {
+        return ['ok' => false, 'message' => 'Please select two different staff members for takeover.'];
+    }
+
+    if ($startDate === '' || $endDate === '' || strtotime($endDate) < strtotime($startDate)) {
+        return ['ok' => false, 'message' => 'Please provide a valid takeover date range.'];
+    }
+
+    $cleanReason = trim($reason);
+    $tag = $cleanReason !== '' ? "[Takeover: {$cleanReason}]" : '[Shift Takeover]';
+
+    $stmt = $conn->prepare(
+        "UPDATE schedules s
+         LEFT JOIN attendance a ON a.schedule_id = s.id AND a.staff_id = s.staff_id
+         SET s.staff_id = ?,
+             s.notes = TRIM(CONCAT(TRIM(REGEXP_REPLACE(COALESCE(s.notes, ''), '\\[ON LEAVE[^\\]]*\\]', '')), ' ', ?))
+         WHERE s.staff_id = ?
+           AND s.schedule_date BETWEEN ? AND ?
+           AND s.status = 'scheduled'
+           AND a.check_in_time IS NULL"
+    );
+
+    if (!$stmt) {
+        return ['ok' => false, 'message' => 'Unable to process shift takeover.'];
+    }
+
+    $stmt->bind_param('isiss', $toStaffId, $tag, $fromStaffId, $startDate, $endDate);
+    $stmt->execute();
+    $moved = $stmt->affected_rows;
+    $stmt->close();
+
+    if ($moved <= 0) {
+        return ['ok' => false, 'message' => 'No upcoming unstarted shifts were found in that date range to take over.'];
+    }
+
+    admin_schedules_write_audit(
+        $conn,
+        $adminId,
+        'bulk_shift_takeover',
+        (string) $toStaffId,
+        "Transferred {$moved} shift(s) from staff #{$fromStaffId} to #{$toStaffId} ({$startDate} to {$endDate}).",
+        $ipAddress
+    );
+
+    return ['ok' => true, 'message' => "Transferred {$moved} shift(s) to the replacement employee."];
+}
+
 // --- Edit & Status Transitions ---
 
 function admin_update_schedule(
@@ -218,7 +350,7 @@ function admin_update_schedule(
     string $ipAddress
 ): array {
     $staffId = (int) ($input['staff_id'] ?? 0);
-    $categoryId = (int) ($input['assigned_category_id'] ?? 0);
+    $categoryId = (int) ($input['assigned_category_id'] ?? $input['category_id'] ?? 0);
     $schedDate = trim((string) ($input['schedule_date'] ?? ''));
     $startTime = trim((string) ($input['start_time'] ?? ''));
     $endTime = trim((string) ($input['end_time'] ?? ''));
@@ -227,7 +359,7 @@ function admin_update_schedule(
     $notes = trim((string) ($input['notes'] ?? ''));
     $status = (string) ($input['status'] ?? 'scheduled');
 
-    if ($scheduleId <= 0 || $staffId <= 0 || $categoryId <= 0 || $schedDate === '' || $task === '') {
+    if ($scheduleId <= 0 || $staffId <= 0 || $categoryId <= 0 || $schedDate === '' || $startTime === '' || $endTime === '' || $task === '') {
         return ['ok' => false, 'message' => 'Please fill out all required shift fields.'];
     }
 
@@ -301,6 +433,18 @@ function admin_change_schedule_state(
         $stmt = $conn->prepare("UPDATE schedules SET status = 'scheduled' WHERE id = ?");
         $msg = 'Shift restored to scheduled.';
     } elseif ($mode === 'delete') {
+        $check = $conn->prepare('SELECT 1 FROM attendance WHERE schedule_id = ? AND check_in_time IS NOT NULL LIMIT 1');
+        if ($check) {
+            $check->bind_param('i', $scheduleId);
+            $check->execute();
+            $hasCheckIn = (bool) $check->get_result()->fetch_assoc();
+            $check->close();
+
+            if ($hasCheckIn) {
+                return ['ok' => false, 'message' => 'Cannot delete a shift that already has a recorded check-in.'];
+            }
+        }
+
         $stmt = $conn->prepare('DELETE FROM schedules WHERE id = ?');
         $msg = 'Shift deleted.';
     } else {

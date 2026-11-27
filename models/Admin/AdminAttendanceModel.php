@@ -1,8 +1,6 @@
 <?php
 declare(strict_types=1);
 
-// --- Shared Time & Audit Helpers ---
-
 if (!function_exists('admin_format_time')) {
     function admin_format_time(?string $timeValue): string
     {
@@ -15,17 +13,17 @@ if (!function_exists('admin_format_time')) {
     }
 }
 
+// Write an audit log entry for administrator attendance adjustments.
 function admin_attendance_write_audit(
     mysqli $conn,
     int $adminId,
+    string $action,
     string $entityId,
     string $description,
     string $ipAddress
 ): void {
-    $action = 'update_attendance';
     $entityType = 'attendance';
     $safeIp = substr($ipAddress, 0, 45);
-
     $stmt = $conn->prepare(
         'INSERT INTO audit_logs (actor_user_id, action, entity_type, entity_id, description, ip_address)
          VALUES (?, ?, ?, ?, ?, ?)'
@@ -38,18 +36,35 @@ function admin_attendance_write_audit(
     }
 }
 
-// --- Attendance Logs Query ---
+// Normalize HTML datetime-local input ("YYYY-MM-DDTHH:MM") into MySQL DATETIME.
+function admin_attendance_normalize_datetime(?string $rawValue): ?string
+{
+    if ($rawValue === null) {
+        return null;
+    }
 
+    $trimmed = trim($rawValue);
+    if ($trimmed === '') {
+        return null;
+    }
+
+    $normalized = str_replace('T', ' ', $trimmed);
+    $timestamp = strtotime($normalized);
+
+    return $timestamp !== false ? date('Y-m-d H:i:s', $timestamp) : null;
+}
+
+// Fetch filtered shift & attendance logs with computed effective_status.
 function admin_get_attendance_logs(mysqli $conn, array $filters, string $today): array
 {
     $sql = "SELECT
                 s.id AS schedule_id,
                 s.staff_id,
+                s.assigned_category_id,
                 s.schedule_date,
                 s.start_time,
                 s.end_time,
                 s.task_description,
-                s.assigned_category_id,
                 s.work_location,
                 s.notes,
                 s.status AS schedule_status,
@@ -109,37 +124,42 @@ function admin_get_attendance_logs(mysqli $conn, array $filters, string $today):
     }
 
     $stmt->execute();
-    $rows = [];
     $res = $stmt->get_result();
+    $rows = [];
+    $now = time();
 
     while ($row = $res->fetch_assoc()) {
+        $schedDate = (string) $row['schedule_date'];
         $notes = (string) ($row['notes'] ?? '');
-        $rawStatus = (string) ($row['attendance_status'] ?? '');
+        $storedStatus = (string) ($row['attendance_status'] ?? '');
+        $hasCheckIn = !empty($row['check_in_time']);
+        $hasCheckOut = !empty($row['check_out_time']);
         $isOnLeave = stripos($notes, '[ON LEAVE]') !== false;
-        $shiftEndTs = strtotime($row['schedule_date'] . ' ' . $row['end_time']);
-        $shiftEnded = $shiftEndTs !== false && $shiftEndTs < time();
+        $shiftEndTs = strtotime($schedDate . ' ' . $row['end_time']);
+        $shiftEnded = $shiftEndTs !== false && $shiftEndTs < $now;
 
         if ($isOnLeave) {
             $effectiveStatus = 'on_leave';
-        } elseif ($rawStatus === 'completed' || !empty($row['check_out_time'])) {
-            $effectiveStatus = 'completed';
-        } elseif ($rawStatus === 'late') {
-            $effectiveStatus = 'late';
-        } elseif ($rawStatus === 'present') {
-            $effectiveStatus = 'present';
-        } elseif ($rawStatus === 'absent') {
+        } elseif ($storedStatus === 'absent') {
             $effectiveStatus = 'absent';
-        } elseif ($rawStatus === 'incomplete') {
+        } elseif ($storedStatus === 'completed' || $hasCheckOut) {
+            $effectiveStatus = 'completed';
+        } elseif ($storedStatus === 'late') {
+            $effectiveStatus = 'late';
+        } elseif ($storedStatus === 'present') {
+            $effectiveStatus = 'present';
+        } elseif ($storedStatus === 'incomplete') {
             $effectiveStatus = 'incomplete';
-        } elseif ($shiftEnded && empty($row['check_in_time'])) {
+        } elseif ($hasCheckIn) {
+            $effectiveStatus = $shiftEnded ? 'incomplete' : 'present';
+        } elseif ($shiftEnded) {
             $effectiveStatus = 'absent';
         } else {
             $effectiveStatus = 'not_started';
         }
 
-        $row['is_on_leave'] = $isOnLeave;
+        $row['is_today'] = ($schedDate === $today);
         $row['effective_status'] = $effectiveStatus;
-        $row['is_today'] = ((string) $row['schedule_date']) === $today;
         $rows[] = $row;
     }
 
@@ -148,27 +168,67 @@ function admin_get_attendance_logs(mysqli $conn, array $filters, string $today):
     return $rows;
 }
 
-// --- Timestamp Normalization & Attendance Overrides ---
-
-function admin_normalize_datetime_input(?string $value): ?string
+// Group attendance records into one compact row per staff member with Start Date – End Date.
+function admin_get_compact_attendance_logs(mysqli $conn, array $filters, string $today): array
 {
-    $clean = trim((string) $value);
-    if ($clean === '') {
-        return null;
+    $rawRecords = admin_get_attendance_logs($conn, $filters, $today);
+    $grouped = [];
+
+    foreach ($rawRecords as $rec) {
+        $staffId = (int) $rec['staff_id'];
+        $schedDate = (string) $rec['schedule_date'];
+        $status = (string) ($rec['effective_status'] ?? 'not_started');
+
+        if (!isset($grouped[$staffId])) {
+            $grouped[$staffId] = [
+                'staff_id' => $staffId,
+                'staff_name' => (string) $rec['staff_name'],
+                'employee_id' => (string) $rec['employee_id'],
+                'staff_position' => (string) ($rec['staff_position'] ?? ''),
+                'start_date' => $schedDate,
+                'end_date' => $schedDate,
+                'shift_count' => 0,
+                'present_completed' => 0,
+                'late' => 0,
+                'absent_leave' => 0,
+                'pending' => 0,
+                'focus_shift' => $rec,
+                'has_today_focus' => ($schedDate === $today),
+                'shifts' => [],
+            ];
+        }
+
+        if ($schedDate < $grouped[$staffId]['start_date']) {
+            $grouped[$staffId]['start_date'] = $schedDate;
+        }
+        if ($schedDate > $grouped[$staffId]['end_date']) {
+            $grouped[$staffId]['end_date'] = $schedDate;
+        }
+
+        // Prefer today's shift as the primary row focus; otherwise keep the most recent shift.
+        if ($schedDate === $today && !$grouped[$staffId]['has_today_focus']) {
+            $grouped[$staffId]['focus_shift'] = $rec;
+            $grouped[$staffId]['has_today_focus'] = true;
+        }
+
+        $grouped[$staffId]['shift_count']++;
+        $grouped[$staffId]['shifts'][] = $rec;
+
+        if ($status === 'present' || $status === 'completed') {
+            $grouped[$staffId]['present_completed']++;
+        } elseif ($status === 'late') {
+            $grouped[$staffId]['late']++;
+        } elseif ($status === 'absent' || $status === 'on_leave' || $status === 'incomplete') {
+            $grouped[$staffId]['absent_leave']++;
+        } else {
+            $grouped[$staffId]['pending']++;
+        }
     }
 
-    $normalized = str_replace('T', ' ', $clean);
-    if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/', $normalized)) {
-        return $normalized . ':00';
-    }
-
-    if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $normalized)) {
-        return $normalized;
-    }
-
-    return null;
+    return array_values($grouped);
 }
 
+// Create, update, or reset an attendance record for a scheduled shift.
 function admin_update_attendance_record(
     mysqli $conn,
     int $adminId,
@@ -178,30 +238,19 @@ function admin_update_attendance_record(
     ?string $checkOutInput,
     string $ipAddress
 ): array {
-    $allowedStatuses = ['not_started', 'present', 'completed', 'late', 'absent', 'incomplete'];
+    $allowedStatuses = ['present', 'late', 'completed', 'absent', 'incomplete', 'not_started'];
     if ($scheduleId <= 0 || !in_array($newStatus, $allowedStatuses, true)) {
-        return ['ok' => false, 'message' => 'Invalid attendance status or shift selected.'];
+        return ['ok' => false, 'message' => 'Invalid shift or attendance status selected.'];
     }
 
     $schedStmt = $conn->prepare(
-        'SELECT
-            s.id,
-            s.staff_id,
-            s.schedule_date,
-            s.start_time,
-            s.end_time,
-            u.full_name AS staff_name,
-            a.check_in_time AS existing_check_in,
-            a.check_out_time AS existing_check_out
-         FROM schedules s
-         INNER JOIN users u ON u.id = s.staff_id
-         LEFT JOIN attendance a
-            ON a.schedule_id = s.id AND a.staff_id = s.staff_id
-         WHERE s.id = ?
+        'SELECT id, staff_id, schedule_date, start_time, end_time
+         FROM schedules
+         WHERE id = ?
          LIMIT 1'
     );
     if (!$schedStmt) {
-        return ['ok' => false, 'message' => 'Unable to load shift details.'];
+        return ['ok' => false, 'message' => 'Unable to look up scheduled shift.'];
     }
 
     $schedStmt->bind_param('i', $scheduleId);
@@ -210,89 +259,108 @@ function admin_update_attendance_record(
     $schedStmt->close();
 
     if (!$shift) {
-        return ['ok' => false, 'message' => 'Scheduled shift not found.'];
+        return ['ok' => false, 'message' => 'Scheduled shift was not found.'];
     }
 
     $staffId = (int) $shift['staff_id'];
     $schedDate = (string) $shift['schedule_date'];
-    $defaultStartDt = $schedDate . ' ' . (string) $shift['start_time'];
-    $defaultEndDt = $schedDate . ' ' . (string) $shift['end_time'];
+    $startTime = (string) $shift['start_time'];
+    $endTime = (string) $shift['end_time'];
 
-    $checkInSql = admin_normalize_datetime_input($checkInInput);
-    $checkOutSql = admin_normalize_datetime_input($checkOutInput);
-
-    if ($newStatus === 'absent' || $newStatus === 'not_started') {
-        $checkInSql = null;
-        $checkOutSql = null;
-    } elseif ($newStatus === 'present' || $newStatus === 'late' || $newStatus === 'incomplete') {
-        if ($checkInSql === null) {
-            $checkInSql = !empty($shift['existing_check_in'])
-                ? (string) $shift['existing_check_in']
-                : ($schedDate === date('Y-m-d') ? date('Y-m-d H:i:s') : $defaultStartDt);
-        }
-        if ($newStatus !== 'completed' && $checkOutInput === null) {
-            $checkOutSql = !empty($shift['existing_check_out']) ? (string) $shift['existing_check_out'] : null;
-        }
-    } elseif ($newStatus === 'completed') {
-        if ($checkInSql === null) {
-            $checkInSql = !empty($shift['existing_check_in']) ? (string) $shift['existing_check_in'] : $defaultStartDt;
-        }
-        if ($checkOutSql === null) {
-            $checkOutSql = !empty($shift['existing_check_out'])
-                ? (string) $shift['existing_check_out']
-                : ($schedDate === date('Y-m-d') ? date('Y-m-d H:i:s') : $defaultEndDt);
-        }
-    }
-
-    if ($checkInSql !== null && $checkOutSql !== null && strtotime($checkOutSql) < strtotime($checkInSql)) {
-        return ['ok' => false, 'message' => 'Check-out time cannot be earlier than check-in time.'];
-    }
-
-    $conn->begin_transaction();
-
-    try {
-        $upsert = $conn->prepare(
-            'INSERT INTO attendance (schedule_id, staff_id, check_in_time, check_out_time, attendance_status)
-             VALUES (?, ?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE
-                check_in_time = VALUES(check_in_time),
-                check_out_time = VALUES(check_out_time),
-                attendance_status = VALUES(attendance_status)'
-        );
-        if (!$upsert) {
-            throw new RuntimeException('Unable to prepare attendance update.');
+    if ($newStatus === 'not_started') {
+        $delStmt = $conn->prepare('DELETE FROM attendance WHERE schedule_id = ? AND staff_id = ?');
+        if ($delStmt) {
+            $delStmt->bind_param('ii', $scheduleId, $staffId);
+            $delStmt->execute();
+            $delStmt->close();
         }
 
-        $upsert->bind_param('iisss', $scheduleId, $staffId, $checkInSql, $checkOutSql, $newStatus);
-        $upsert->execute();
-        $upsert->close();
-
-        if ($newStatus === 'completed') {
-            $updSched = $conn->prepare("UPDATE schedules SET status = 'completed' WHERE id = ? AND status = 'scheduled'");
-            if ($updSched) {
-                $updSched->bind_param('i', $scheduleId);
-                $updSched->execute();
-                $updSched->close();
-            }
-        }
-
-        $label = ucwords(str_replace('_', ' ', $newStatus));
         admin_attendance_write_audit(
             $conn,
             $adminId,
+            'reset_attendance',
             (string) $scheduleId,
-            "Updated attendance for {$shift['staff_name']} ({$schedDate}) to {$label}.",
+            "Reset attendance for shift #{$scheduleId} to Pending.",
             $ipAddress
         );
 
-        $conn->commit();
-
-        return [
-            'ok' => true,
-            'message' => "Attendance for {$shift['staff_name']} on {$schedDate} updated to {$label}.",
-        ];
-    } catch (Throwable $e) {
-        $conn->rollback();
-        return ['ok' => false, 'message' => 'Unable to update attendance record. Please try again.'];
+        return ['ok' => true, 'message' => 'Attendance record reset to Pending.'];
     }
+
+    $existingStmt = $conn->prepare(
+        'SELECT id, check_in_time, check_out_time
+         FROM attendance
+         WHERE schedule_id = ? AND staff_id = ?
+         LIMIT 1'
+    );
+    $existing = null;
+    if ($existingStmt) {
+        $existingStmt->bind_param('ii', $scheduleId, $staffId);
+        $existingStmt->execute();
+        $existing = $existingStmt->get_result()->fetch_assoc();
+        $existingStmt->close();
+    }
+
+    $parsedIn = admin_attendance_normalize_datetime($checkInInput);
+    $parsedOut = admin_attendance_normalize_datetime($checkOutInput);
+
+    $defaultIn = ($schedDate === date('Y-m-d'))
+        ? date('Y-m-d H:i:s')
+        : ($schedDate . ' ' . $startTime);
+    $defaultOut = ($schedDate === date('Y-m-d'))
+        ? date('Y-m-d H:i:s')
+        : ($schedDate . ' ' . $endTime);
+
+    if ($newStatus === 'absent') {
+        $finalCheckIn = null;
+        $finalCheckOut = null;
+    } elseif ($newStatus === 'completed') {
+        $finalCheckIn = $parsedIn ?? (!empty($existing['check_in_time']) ? (string) $existing['check_in_time'] : $defaultIn);
+        $finalCheckOut = $parsedOut ?? (!empty($existing['check_out_time']) ? (string) $existing['check_out_time'] : $defaultOut);
+    } elseif ($newStatus === 'incomplete') {
+        $finalCheckIn = $parsedIn ?? (!empty($existing['check_in_time']) ? (string) $existing['check_in_time'] : $defaultIn);
+        $finalCheckOut = null;
+    } else {
+        $finalCheckIn = $parsedIn ?? (!empty($existing['check_in_time']) ? (string) $existing['check_in_time'] : $defaultIn);
+        $finalCheckOut = $parsedOut;
+    }
+
+    if ($existing) {
+        $attendanceId = (int) $existing['id'];
+        $upd = $conn->prepare(
+            'UPDATE attendance
+             SET check_in_time = ?,
+                 check_out_time = ?,
+                 attendance_status = ?
+             WHERE id = ?'
+        );
+        if (!$upd) {
+            return ['ok' => false, 'message' => 'Unable to update attendance record.'];
+        }
+        $upd->bind_param('sssi', $finalCheckIn, $finalCheckOut, $newStatus, $attendanceId);
+        $upd->execute();
+        $upd->close();
+    } else {
+        $ins = $conn->prepare(
+            'INSERT INTO attendance (schedule_id, staff_id, check_in_time, check_out_time, attendance_status)
+             VALUES (?, ?, ?, ?, ?)'
+        );
+        if (!$ins) {
+            return ['ok' => false, 'message' => 'Unable to save attendance record.'];
+        }
+        $ins->bind_param('iisss', $scheduleId, $staffId, $finalCheckIn, $finalCheckOut, $newStatus);
+        $ins->execute();
+        $ins->close();
+    }
+
+    admin_attendance_write_audit(
+        $conn,
+        $adminId,
+        'update_attendance',
+        (string) $scheduleId,
+        "Updated shift #{$scheduleId} attendance status to {$newStatus}.",
+        $ipAddress
+    );
+
+    return ['ok' => true, 'message' => 'Attendance record updated to ' . ucfirst($newStatus) . '.'];
 }

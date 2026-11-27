@@ -1,5 +1,16 @@
 <?php
 declare(strict_types=1);
+
+$currentErrorField = $errorField ?? '';
+$isEmailInvalid = in_array($currentErrorField, ['email', 'both'], true);
+$isPasswordInvalid = in_array($currentErrorField, ['password', 'both'], true);
+
+$emailFeedback = $currentErrorField === 'both'
+    ? 'Please enter your email address.'
+    : ($fieldError ?? '');
+$passwordFeedback = $currentErrorField === 'both'
+    ? 'Please enter your password.'
+    : ($fieldError ?? '');
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -9,6 +20,38 @@ declare(strict_types=1);
     <title><?= e($pageTitle) ?> | <?= e($companyName) ?></title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="<?= e($baseUrl) ?>/assets/css/login.css" rel="stylesheet">
+    <style>
+        .field-error-highlight {
+            display: flex;
+            align-items: center;
+            gap: 0.45rem;
+            margin-top: 0.45rem;
+            padding: 0.45rem 0.65rem;
+            font-size: 0.8125rem;
+            font-weight: 600;
+            color: #b91c1c;
+            background-color: #fef2f2;
+            border: 1px solid #fecaca;
+            border-left: 3.5px solid #dc2626;
+            border-radius: 0.45rem;
+            box-shadow: 0 1px 2px rgba(220, 38, 38, 0.08);
+        }
+        .login-card .form-control.is-invalid {
+            border-color: #dc2626;
+            background-color: #fffafa;
+            box-shadow: 0 0 0 0.18rem rgba(220, 38, 38, 0.14);
+        }
+        .login-card .input-group.has-field-error {
+            border-radius: 0.375rem;
+            box-shadow: 0 0 0 0.18rem rgba(220, 38, 38, 0.14);
+        }
+        .login-card .input-group.has-field-error .form-control,
+        .login-card .input-group.has-field-error .password-toggle-btn {
+            border-color: #dc2626;
+            background-color: #fffafa;
+            box-shadow: none;
+        }
+    </style>
 </head>
 <body class="login-page" style="--login-bg-image: url('<?= e($backgroundImageUrl) ?>');">
     <main class="login-shell">
@@ -40,8 +83,8 @@ declare(strict_types=1);
                 </div>
             <?php endif; ?>
 
-            <!-- Validation error messages -->
-            <?php if (!empty($errors)): ?>
+            <!-- General/CSRF error alert only (field errors are highlighted below their inputs) -->
+            <?php if (!empty($errors) && $currentErrorField === ''): ?>
                 <div class="alert alert-danger small" role="alert">
                     <ul class="mb-0 ps-3">
                         <?php foreach ($errors as $error): ?>
@@ -60,7 +103,7 @@ declare(strict_types=1);
                     <label for="email" class="form-label">Email Address</label>
                     <input
                         type="email"
-                        class="form-control"
+                        class="form-control <?= $isEmailInvalid ? 'is-invalid' : '' ?>"
                         id="email"
                         name="email"
                         maxlength="254"
@@ -69,6 +112,16 @@ declare(strict_types=1);
                         value="<?= e($oldEmail) ?>"
                         placeholder="name@gmail.com"
                     >
+                    <?php if ($isEmailInvalid && $emailFeedback !== ''): ?>
+                        <div class="field-error-highlight" role="alert">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <circle cx="12" cy="12" r="10"/>
+                                <line x1="12" y1="8" x2="12" y2="12"/>
+                                <line x1="12" y1="16" x2="12.01" y2="16"/>
+                            </svg>
+                            <span><?= e($emailFeedback) ?></span>
+                        </div>
+                    <?php endif; ?>
                 </div>
 
                 <div class="mb-3">
@@ -78,10 +131,10 @@ declare(strict_types=1);
                             Forgot password?
                         </button>
                     </div>
-                    <div class="input-group">
+                    <div class="input-group <?= $isPasswordInvalid ? 'has-field-error' : '' ?>">
                         <input
                             type="password"
-                            class="form-control"
+                            class="form-control <?= $isPasswordInvalid ? 'is-invalid' : '' ?>"
                             id="password"
                             name="password"
                             autocomplete="current-password"
@@ -103,6 +156,16 @@ declare(strict_types=1);
                             </svg>
                         </button>
                     </div>
+                    <?php if ($isPasswordInvalid && $passwordFeedback !== ''): ?>
+                        <div class="field-error-highlight" role="alert">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <circle cx="12" cy="12" r="10"/>
+                                <line x1="12" y1="8" x2="12" y2="12"/>
+                                <line x1="12" y1="16" x2="12.01" y2="16"/>
+                            </svg>
+                            <span><?= e($passwordFeedback) ?></span>
+                        </div>
+                    <?php endif; ?>
                 </div>
 
                 <button type="submit" class="btn btn-login-submit mt-2">Sign In</button>

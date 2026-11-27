@@ -89,6 +89,6 @@ $googleClient->setPrompt('consent');
 
 return [
     'client' => $googleClient,
-    'token_file' => $tokenFile,
+    'token_file' => __DIR__ . '/../secure/google-token.json',
     'secure_directory' => $secureDirectory,
 ];

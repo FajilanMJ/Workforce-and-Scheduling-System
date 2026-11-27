@@ -208,3 +208,8 @@ body.login-page {
     border-color: var(--green);
     color: #ffffff;
 }
+
+input[type="password"]::-ms-reveal,
+input[type="password"]::-ms-clear {
+    display: none;
+}

@@ -26,16 +26,16 @@ require __DIR__ . '/../layouts/admin_header.php';
     </div>
 </section>
 
-<!-- Main Attendance Card -->
+<!-- Main Compact Attendance Card -->
 <section class="content-card">
     <div class="card-heading">
         <div>
             <h2>Workforce Attendance Logs</h2>
-            <div class="small muted">Monitor check-ins, check-outs, and shift attendance records</div>
+            <div class="small muted">Compact employee attendance ranges &amp; daily shift time logs</div>
         </div>
     </div>
 
-    <!-- Instant Filter Bar (Employee, Category, and Keyword) -->
+    <!-- Instant Filter Bar -->
     <form method="get" action="<?= e($baseUrl) ?>/admin/attendance.php" class="schedule-filter-panel auto-filter-form">
         <div class="schedule-filter-row">
             <div class="schedule-filter-field">
@@ -87,21 +87,29 @@ require __DIR__ . '/../layouts/admin_header.php';
             <table class="table align-middle">
                 <thead>
                     <tr>
-                        <th>Date</th>
                         <th>Staff Member</th>
-                        <th>Scheduled Shift</th>
-                        <th>Check-In / Check-Out</th>
+                        <th>Shift Date Range</th>
+                        <th>Attendance Tally</th>
+                        <th>Latest / Today Log</th>
                         <th>Status</th>
                         <th class="text-end">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <?php foreach ($attendanceRecords as $rec): ?>
+                    <?php foreach ($attendanceRecords as $row): ?>
                         <?php
-                        $schedId = (int) $rec['schedule_id'];
-                        $schedDate = (string) $rec['schedule_date'];
-                        $isToday = !empty($rec['is_today']);
-                        $effectiveStatus = (string) ($rec['effective_status'] ?? 'not_started');
+                        $startDate = (string) $row['start_date'];
+                        $endDate = (string) $row['end_date'];
+                        $shiftCount = (int) $row['shift_count'];
+                        $includesToday = ($today >= $startDate && $today <= $endDate);
+                        $focus = $row['focus_shift'];
+                        $focusSchedId = (int) $focus['schedule_id'];
+                        $focusDate = (string) $focus['schedule_date'];
+                        $effectiveStatus = (string) ($focus['effective_status'] ?? 'not_started');
+
+                        $dateRangeText = ($startDate === $endDate)
+                            ? date('M j, Y', strtotime($startDate))
+                            : date('M j, Y', strtotime($startDate)) . ' – ' . date('M j, Y', strtotime($endDate));
 
                         [$pillClass, $pillLabel] = match ($effectiveStatus) {
                             'present' => ['scheduled', 'Present'],
@@ -113,58 +121,82 @@ require __DIR__ . '/../layouts/admin_header.php';
                             default => ['pending', 'Pending'],
                         };
 
-                        $checkInVal = !empty($rec['check_in_time'])
-                            ? date('Y-m-d\TH:i', strtotime((string) $rec['check_in_time']))
+                        $checkInVal = !empty($focus['check_in_time'])
+                            ? date('Y-m-d\TH:i', strtotime((string) $focus['check_in_time']))
                             : '';
-                        $checkOutVal = !empty($rec['check_out_time'])
-                            ? date('Y-m-d\TH:i', strtotime((string) $rec['check_out_time']))
+                        $checkOutVal = !empty($focus['check_out_time'])
+                            ? date('Y-m-d\TH:i', strtotime((string) $focus['check_out_time']))
                             : '';
-                        $shiftSummary = date('M j, Y', strtotime($schedDate))
-                            . ' (' . admin_format_time((string) $rec['start_time'])
-                            . ' – ' . admin_format_time((string) $rec['end_time']) . ')';
+                        $shiftSummary = date('M j, Y', strtotime($focusDate))
+                            . ' (' . admin_format_time((string) $focus['start_time'])
+                            . ' – ' . admin_format_time((string) $focus['end_time']) . ')';
                         $modalStatusDefault = in_array($effectiveStatus, ['present', 'completed', 'late', 'absent', 'incomplete', 'not_started'], true)
                             ? $effectiveStatus
                             : 'absent';
+
+                        // Build compact JSON list of shifts for the modal date selector.
+                        $shiftOptions = [];
+                        foreach ($row['shifts'] as $sItem) {
+                            $sDate = (string) $sItem['schedule_date'];
+                            $sEff = (string) ($sItem['effective_status'] ?? 'not_started');
+                            $shiftOptions[] = [
+                                'id' => (int) $sItem['schedule_id'],
+                                'label' => date('M j, Y', strtotime($sDate))
+                                    . ' • ' . admin_format_time((string) $sItem['start_time'])
+                                    . '–' . admin_format_time((string) $sItem['end_time'])
+                                    . ' (' . $sItem['category_name'] . ')',
+                                'status' => in_array($sEff, ['present', 'completed', 'late', 'absent', 'incomplete', 'not_started'], true) ? $sEff : 'absent',
+                                'checkIn' => !empty($sItem['check_in_time']) ? date('Y-m-d\TH:i', strtotime((string) $sItem['check_in_time'])) : '',
+                                'checkOut' => !empty($sItem['check_out_time']) ? date('Y-m-d\TH:i', strtotime((string) $sItem['check_out_time'])) : '',
+                            ];
+                        }
+                        $shiftsJson = htmlspecialchars((string) json_encode($shiftOptions, JSON_UNESCAPED_UNICODE), ENT_QUOTES, 'UTF-8');
                         ?>
                         <tr>
                             <td>
-                                <div class="shift-date-box <?= $isToday ? 'today-box' : '' ?>">
-                                    <span class="shift-date-main"><?= e(date('M j, Y', strtotime($schedDate))) ?></span>
-                                    <span class="shift-date-sub"><?= $isToday ? 'Today' : e(date('l', strtotime($schedDate))) ?></span>
-                                </div>
-                            </td>
-
-                            <td>
-                                <strong><?= e((string) $rec['staff_name']) ?></strong>
+                                <strong><?= e((string) $row['staff_name']) ?></strong>
                                 <div class="small muted mt-1">
-                                    <?= e((string) $rec['employee_id']) ?>
-                                    <?php if (!empty($rec['staff_position'])): ?>
-                                        &middot; <?= e((string) $rec['staff_position']) ?>
+                                    <?= e((string) $row['employee_id']) ?>
+                                    <?php if (!empty($row['staff_position'])): ?>
+                                        &middot; <?= e((string) $row['staff_position']) ?>
                                     <?php endif; ?>
                                 </div>
                             </td>
 
                             <td>
-                                <span class="warm-category-tag"><?= e((string) $rec['category_name']) ?></span>
-                                <div class="mt-1 fw-semibold" style="font-size: 13px;">
-                                    <?= e(admin_format_time((string) $rec['start_time'])) ?>
-                                    &ndash;
-                                    <?= e(admin_format_time((string) $rec['end_time'])) ?>
+                                <div class="shift-date-box <?= $includesToday ? 'today-box' : '' ?>">
+                                    <span class="shift-date-main"><?= e($dateRangeText) ?></span>
+                                    <span class="shift-date-sub">
+                                        <?= $shiftCount ?> <?= $shiftCount === 1 ? 'shift' : 'shifts' ?>
+                                        <?= !empty($row['has_today_focus']) ? ' &bull; Active Today' : '' ?>
+                                    </span>
                                 </div>
-                                <?php if (!empty($rec['work_location'])): ?>
-                                    <div class="small muted"><?= e((string) $rec['work_location']) ?></div>
-                                <?php endif; ?>
                             </td>
 
                             <td>
-                                <div class="attendance-time-pair">
+                                <div class="small">
+                                    <span class="text-success fw-semibold"><?= (int) $row['present_completed'] ?> Present</span>
+                                    &middot;
+                                    <span class="text-warning fw-semibold"><?= (int) $row['late'] ?> Late</span>
+                                </div>
+                                <div class="small muted mt-1">
+                                    <?= (int) $row['absent_leave'] ?> Absent/Leave &middot; <?= (int) $row['pending'] ?> Pending
+                                </div>
+                            </td>
+
+                            <td>
+                                <div class="small fw-semibold" style="color: var(--green-dark);">
+                                    <?= $focusDate === $today ? 'Today' : e(date('M j', strtotime($focusDate))) ?>
+                                    &middot; <?= e((string) $focus['category_name']) ?>
+                                </div>
+                                <div class="attendance-time-pair mt-1">
                                     <span>
                                         <strong>In:</strong>
-                                        <?= !empty($rec['check_in_time']) ? e(admin_format_time((string) $rec['check_in_time'])) : '—' ?>
+                                        <?= !empty($focus['check_in_time']) ? e(admin_format_time((string) $focus['check_in_time'])) : '—' ?>
                                     </span>
                                     <span>
                                         <strong>Out:</strong>
-                                        <?= !empty($rec['check_out_time']) ? e(admin_format_time((string) $rec['check_out_time'])) : '—' ?>
+                                        <?= !empty($focus['check_out_time']) ? e(admin_format_time((string) $focus['check_out_time'])) : '—' ?>
                                     </span>
                                 </div>
                             </td>
@@ -174,83 +206,82 @@ require __DIR__ . '/../layouts/admin_header.php';
                             </td>
 
                             <td class="text-end">
-                                <div class="dropdown d-inline-block">
+                                <div class="d-inline-flex gap-1 align-items-center">
                                     <button
                                         type="button"
-                                        class="row-action-toggle"
-                                        data-bs-toggle="dropdown"
-                                        data-bs-popper-config='{"strategy":"fixed"}'
-                                        aria-expanded="false"
-                                        aria-label="Attendance actions for <?= e((string) $rec['staff_name']) ?>"
-                                        title="Actions"
+                                        class="btn btn-outline-green btn-sm py-1 px-2"
+                                        style="font-size: 11.5px;"
+                                        data-bs-toggle="modal"
+                                        data-bs-target="#editAttendanceModal"
+                                        data-schedule-id="<?= $focusSchedId ?>"
+                                        data-staff-name="<?= e((string) $row['staff_name']) ?>"
+                                        data-shift-label="<?= e($shiftSummary) ?>"
+                                        data-status="<?= e($modalStatusDefault) ?>"
+                                        data-check-in="<?= e($checkInVal) ?>"
+                                        data-check-out="<?= e($checkOutVal) ?>"
+                                        data-shifts="<?= $shiftsJson ?>"
                                     >
-                                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-                                            <circle cx="8" cy="3" r="1.4"/>
-                                            <circle cx="8" cy="8" r="1.4"/>
-                                            <circle cx="8" cy="13" r="1.4"/>
-                                        </svg>
+                                        Edit Log
                                     </button>
 
-                                    <ul class="dropdown-menu dropdown-menu-end row-action-menu">
-                                        <li>
-                                            <button
-                                                type="button"
-                                                class="dropdown-item"
-                                                data-bs-toggle="modal"
-                                                data-bs-target="#editAttendanceModal"
-                                                data-schedule-id="<?= $schedId ?>"
-                                                data-staff-name="<?= e((string) $rec['staff_name']) ?>"
-                                                data-shift-label="<?= e($shiftSummary) ?>"
-                                                data-status="<?= e($modalStatusDefault) ?>"
-                                                data-check-in="<?= e($checkInVal) ?>"
-                                                data-check-out="<?= e($checkOutVal) ?>"
-                                            >
-                                                Edit Time &amp; Status
-                                            </button>
-                                        </li>
+                                    <div class="dropdown d-inline-block">
+                                        <button
+                                            type="button"
+                                            class="row-action-toggle"
+                                            data-bs-toggle="dropdown"
+                                            data-bs-popper-config='{"strategy":"fixed"}'
+                                            aria-expanded="false"
+                                            title="Quick mark <?= $focusDate === $today ? 'today' : e(date('M j', strtotime($focusDate))) ?>"
+                                        >
+                                            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                                                <circle cx="8" cy="3" r="1.4"/>
+                                                <circle cx="8" cy="8" r="1.4"/>
+                                                <circle cx="8" cy="13" r="1.4"/>
+                                            </svg>
+                                        </button>
 
-                                        <li><hr class="dropdown-divider"></li>
-
-                                        <li>
-                                            <form method="post" action="<?= e($baseUrl) ?>/admin/attendance.php">
-                                                <input type="hidden" name="csrf_token" value="<?= e($csrfToken) ?>">
-                                                <input type="hidden" name="action" value="update_attendance">
-                                                <input type="hidden" name="schedule_id" value="<?= $schedId ?>">
-                                                <input type="hidden" name="attendance_status" value="present">
-                                                <button type="submit" class="dropdown-item">Mark Present</button>
-                                            </form>
-                                        </li>
-
-                                        <li>
-                                            <form method="post" action="<?= e($baseUrl) ?>/admin/attendance.php">
-                                                <input type="hidden" name="csrf_token" value="<?= e($csrfToken) ?>">
-                                                <input type="hidden" name="action" value="update_attendance">
-                                                <input type="hidden" name="schedule_id" value="<?= $schedId ?>">
-                                                <input type="hidden" name="attendance_status" value="late">
-                                                <button type="submit" class="dropdown-item action-warn">Mark Late</button>
-                                            </form>
-                                        </li>
-
-                                        <li>
-                                            <form method="post" action="<?= e($baseUrl) ?>/admin/attendance.php">
-                                                <input type="hidden" name="csrf_token" value="<?= e($csrfToken) ?>">
-                                                <input type="hidden" name="action" value="update_attendance">
-                                                <input type="hidden" name="schedule_id" value="<?= $schedId ?>">
-                                                <input type="hidden" name="attendance_status" value="completed">
-                                                <button type="submit" class="dropdown-item">Mark Completed</button>
-                                            </form>
-                                        </li>
-
-                                        <li>
-                                            <form method="post" action="<?= e($baseUrl) ?>/admin/attendance.php">
-                                                <input type="hidden" name="csrf_token" value="<?= e($csrfToken) ?>">
-                                                <input type="hidden" name="action" value="update_attendance">
-                                                <input type="hidden" name="schedule_id" value="<?= $schedId ?>">
-                                                <input type="hidden" name="attendance_status" value="absent">
-                                                <button type="submit" class="dropdown-item action-danger">Mark Absent</button>
-                                            </form>
-                                        </li>
-                                    </ul>
+                                        <ul class="dropdown-menu dropdown-menu-end row-action-menu">
+                                            <li class="dropdown-header small text-muted">
+                                                Quick Mark (<?= $focusDate === $today ? 'Today' : e(date('M j', strtotime($focusDate))) ?>)
+                                            </li>
+                                            <li>
+                                                <form method="post" action="<?= e($baseUrl) ?>/admin/attendance.php">
+                                                    <input type="hidden" name="csrf_token" value="<?= e($csrfToken) ?>">
+                                                    <input type="hidden" name="action" value="update_attendance">
+                                                    <input type="hidden" name="schedule_id" value="<?= $focusSchedId ?>">
+                                                    <input type="hidden" name="attendance_status" value="present">
+                                                    <button type="submit" class="dropdown-item">Mark Present</button>
+                                                </form>
+                                            </li>
+                                            <li>
+                                                <form method="post" action="<?= e($baseUrl) ?>/admin/attendance.php">
+                                                    <input type="hidden" name="csrf_token" value="<?= e($csrfToken) ?>">
+                                                    <input type="hidden" name="action" value="update_attendance">
+                                                    <input type="hidden" name="schedule_id" value="<?= $focusSchedId ?>">
+                                                    <input type="hidden" name="attendance_status" value="late">
+                                                    <button type="submit" class="dropdown-item action-warn">Mark Late</button>
+                                                </form>
+                                            </li>
+                                            <li>
+                                                <form method="post" action="<?= e($baseUrl) ?>/admin/attendance.php">
+                                                    <input type="hidden" name="csrf_token" value="<?= e($csrfToken) ?>">
+                                                    <input type="hidden" name="action" value="update_attendance">
+                                                    <input type="hidden" name="schedule_id" value="<?= $focusSchedId ?>">
+                                                    <input type="hidden" name="attendance_status" value="completed">
+                                                    <button type="submit" class="dropdown-item">Mark Completed</button>
+                                                </form>
+                                            </li>
+                                            <li>
+                                                <form method="post" action="<?= e($baseUrl) ?>/admin/attendance.php">
+                                                    <input type="hidden" name="csrf_token" value="<?= e($csrfToken) ?>">
+                                                    <input type="hidden" name="action" value="update_attendance">
+                                                    <input type="hidden" name="schedule_id" value="<?= $focusSchedId ?>">
+                                                    <input type="hidden" name="attendance_status" value="absent">
+                                                    <button type="submit" class="dropdown-item action-danger">Mark Absent</button>
+                                                </form>
+                                            </li>
+                                        </ul>
+                                    </div>
                                 </div>
                             </td>
                         </tr>
@@ -265,7 +296,7 @@ require __DIR__ . '/../layouts/admin_header.php';
     <?php endif; ?>
 </section>
 
-<!-- Edit Attendance Modal -->
+<!-- Edit Attendance Modal with Shift Date Selector -->
 <div class="modal fade" id="editAttendanceModal" tabindex="-1" aria-labelledby="editAttendanceModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
         <form method="post" action="<?= e($baseUrl) ?>/admin/attendance.php" class="modal-content">
@@ -282,6 +313,11 @@ require __DIR__ . '/../layouts/admin_header.php';
                 <input type="hidden" name="schedule_id" id="attendanceScheduleId" value="">
 
                 <div class="small muted mb-2" id="attendanceShiftLabel"></div>
+
+                <div class="mb-2" id="attendanceShiftPickerGroup" style="display: none;">
+                    <label for="attendanceShiftPicker" class="form-label small fw-bold mb-1">Select Shift Date *</label>
+                    <select id="attendanceShiftPicker" class="form-select form-select-sm"></select>
+                </div>
 
                 <div class="mb-2">
                     <label for="attendanceStatusSelect" class="form-label small fw-bold mb-1">Attendance Status *</label>
@@ -317,5 +353,55 @@ require __DIR__ . '/../layouts/admin_header.php';
         </form>
     </div>
 </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const modalEl = document.getElementById('editAttendanceModal');
+    const pickerGroup = document.getElementById('attendanceShiftPickerGroup');
+    const picker = document.getElementById('attendanceShiftPicker');
+    if (!modalEl || !picker || !pickerGroup) return;
+
+    let shiftsMap = {};
+
+    modalEl.addEventListener('show.bs.modal', function (event) {
+        const trigger = event.relatedTarget;
+        if (!trigger) return;
+
+        shiftsMap = {};
+        picker.innerHTML = '';
+
+        let shifts = [];
+        try {
+            shifts = JSON.parse(trigger.getAttribute('data-shifts') || '[]');
+        } catch (e) {
+            shifts = [];
+        }
+
+        if (shifts.length > 1) {
+            pickerGroup.style.display = 'block';
+            shifts.forEach(function (item) {
+                shiftsMap[String(item.id)] = item;
+                const opt = document.createElement('option');
+                opt.value = String(item.id);
+                opt.textContent = item.label;
+                picker.appendChild(opt);
+            });
+            picker.value = trigger.getAttribute('data-schedule-id') || String(shifts[0].id);
+        } else {
+            pickerGroup.style.display = 'none';
+        }
+    });
+
+    picker.addEventListener('change', function () {
+        const chosen = shiftsMap[picker.value];
+        if (!chosen) return;
+        document.getElementById('attendanceScheduleId').value = String(chosen.id);
+        document.getElementById('attendanceShiftLabel').textContent = chosen.label;
+        document.getElementById('attendanceStatusSelect').value = chosen.status;
+        document.getElementById('attendanceCheckInInput').value = chosen.checkIn || '';
+        document.getElementById('attendanceCheckOutInput').value = chosen.checkOut || '';
+    });
+});
+</script>
 <?php
 require __DIR__ . '/../layouts/admin_footer.php';
